@@ -142,7 +142,17 @@ export function buildNodeResponseMessages(context: NodeGenerationContext): AiTex
 
 export async function hydrateNodeGenerationContext(context: NodeGenerationContext) {
     const { imageToDataUrl } = await import("@/services/image-storage");
-    return { ...context, referenceImages: await Promise.all(context.referenceImages.map(async (image) => ({ ...image, dataUrl: await imageToDataUrl(image) }))) };
+    const { compressImage } = await import("@/lib/image-utils");
+    return {
+        ...context,
+        referenceImages: await Promise.all(
+            context.referenceImages.map(async (image) => {
+                const dataUrl = await imageToDataUrl(image);
+                const compressed = dataUrl.startsWith("data:") ? await compressImage(dataUrl) : dataUrl;
+                return { ...image, dataUrl: compressed };
+            })
+        )
+    };
 }
 
 function readNodeTextInput(node: CanvasNodeData) {

@@ -9,6 +9,7 @@ import { motion } from "motion/react";
 import { modelOptionName, normalizeModelOptionValue, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
+import { compressImage } from "@/lib/image-utils";
 import { requestToolResponse, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@/services/api/image";
 import { imageToDataUrl } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -1272,7 +1273,15 @@ async function buildToolAgentMessages(snapshot: CanvasAgentSnapshot, history: Ca
             content: [
                 ...refs.flatMap((item) => (item.text ? [{ type: "text" as const, text: `选中节点 ${item.title}：${item.text}` }] : [])),
                 { type: "text", text: `当前画布：${JSON.stringify(compactSnapshot(snapshot))}\n\n用户需求：${userMessage.text}` },
-                ...(await Promise.all(refs.filter((item) => item.dataUrl).map(async (item) => ({ type: "image_url" as const, image_url: { url: await imageToDataUrl(item) } })))),
+                ...(await Promise.all(
+                    refs
+                        .filter((item) => item.dataUrl)
+                        .map(async (item) => {
+                            const dataUrl = await imageToDataUrl(item);
+                            const compressed = dataUrl.startsWith("data:") ? await compressImage(dataUrl) : dataUrl;
+                            return { type: "image_url" as const, image_url: { url: compressed } };
+                        })
+                )),
             ],
         },
     ];

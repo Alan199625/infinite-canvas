@@ -50,9 +50,15 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 }
 
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
-    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
-    if (!url || url.startsWith("data:")) return url;
-    return blobToDataUrl(await (await fetch(url)).blob());
+    try {
+        const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
+        if (!url || url.startsWith("data:")) return url;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await blobToDataUrl(await response.blob());
+    } catch (error) {
+        throw new Error(`读取参考图失败 [${image.storageKey || image.url || "无地址"}]: ${error instanceof Error ? error.message : error}`);
+    }
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {

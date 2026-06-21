@@ -60,3 +60,38 @@ export function dataUrlToFile(image: ReferenceImage) {
     }
     return new File([bytes], image.name || "reference.png", { type: mimeType });
 }
+
+export function compressImage(dataUrl: string, maxDim = 1024): Promise<string> {
+    return new Promise<string>((resolve) => {
+        const image = new Image();
+        image.onload = () => {
+            let width = image.naturalWidth || image.width;
+            let height = image.naturalHeight || image.height;
+            if (width <= 0 || height <= 0) {
+                resolve(dataUrl);
+                return;
+            }
+            if (width > maxDim || height > maxDim) {
+                if (width > height) {
+                    height = Math.round((height * maxDim) / width);
+                    width = maxDim;
+                } else {
+                    width = Math.round((width * maxDim) / height);
+                    height = maxDim;
+                }
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) {
+                resolve(dataUrl);
+                return;
+            }
+            ctx.drawImage(image, 0, 0, width, height);
+            resolve(canvas.toDataURL("image/jpeg", 0.8));
+        };
+        image.onerror = () => resolve(dataUrl);
+        image.src = dataUrl;
+    });
+}

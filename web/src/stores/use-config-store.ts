@@ -131,7 +131,7 @@ function isVideoModelName(model: string) {
 
 function isImageModelName(model: string) {
     const value = modelOptionName(model).toLowerCase();
-    return !isVideoModelName(model) && !isAudioModelName(model) && (value.includes("seedream") || value.includes("gpt-image") || value.includes("image") || value.includes("dall-e") || value.includes("dalle") || value.includes("imagen") || value.includes("flux") || value.includes("sdxl") || value.includes("stable-diffusion") || value.includes("midjourney"));
+    return !isVideoModelName(model) && !isAudioModelName(model) && (value.includes("seedream") || value.includes("gpt-image") || value.includes("image") || value.includes("dall-e") || value.includes("dalle") || value.includes("imagen") || value.includes("flux") || value.includes("sdxl") || value.includes("stable-diffusion") || value.includes("midjourney") || value.includes("banana"));
 }
 
 function isAudioModelName(model: string) {
@@ -300,8 +300,8 @@ export function normalizeModelOptionValue(value: string | undefined, channels: M
         const channel = channels.find((item) => item.id === decoded.channelId);
         return channel && channel.models.includes(decoded.model) ? model : "";
     }
-    const channel = channels.find((item) => item.models.includes(decoded?.model || model)) || channels[0];
-    return channel && channel.models.includes(decoded?.model || model) ? encodeChannelModel(channel.id, decoded?.model || model) : model;
+    const channel = channels.find((item) => item.models.includes(model)) || channels[0];
+    return channel && channel.models.includes(model) ? encodeChannelModel(channel.id, model) : model;
 }
 
 export function resolveModelChannel(config: AiConfig, value: string) {
@@ -371,12 +371,18 @@ function uniqueModelOptions(models: string[]) {
 }
 
 export function buildApiUrl(baseUrl: string, path: string) {
-    let normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+    let normalizedBaseUrl = baseUrl.trim().replace(/\/chat\/completions\/?$/i, "").replace(/\/+$/, "");
     normalizedBaseUrl = normalizeArkPlanBaseUrl(normalizedBaseUrl);
+    normalizedBaseUrl = normalizeGrsaiBaseUrl(normalizedBaseUrl);
     const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
     const apiBaseUrl = lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/api/v3") || lowerBaseUrl.endsWith("/api/plan/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return `${apiBaseUrl}${path}`;
 }
+
+function normalizeGrsaiBaseUrl(baseUrl: string): string {
+    return baseUrl;
+}
+
 
 function normalizeArkPlanBaseUrl(baseUrl: string) {
     try {

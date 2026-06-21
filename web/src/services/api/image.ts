@@ -68,6 +68,7 @@ type ResponseStreamState = { buffer: string; text: string; payload?: ResponseApi
 
 type ImageApiResponse = {
     data?: Array<Record<string, unknown>>;
+    results?: Array<Record<string, unknown>>;
     error?: { message?: string };
     code?: number;
     msg?: string;
@@ -111,6 +112,139 @@ const IMAGE_MAX_PIXELS = 8294400;
 const IMAGE_MAX_EDGE = 3840;
 const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
+
+const GPT_IMAGE_2_VIP_MAP: Record<string, Record<string, string>> = {
+    "1:1": { "1K": "1024x1024", "2K": "2048x2048", "4K": "2880x2880" },
+    "16:9": { "1K": "1280x720", "2K": "2048x1152", "4K": "3840x2160" },
+    "9:16": { "1K": "720x1280", "2K": "1152x2048", "4K": "2160x3840" },
+    "4:3": { "1K": "1152x864", "2K": "2304x1728", "4K": "3264x2448" },
+    "3:4": { "1K": "864x1152", "2K": "1728x2304", "4K": "2448x3264" },
+    "3:2": { "1K": "1536x1024", "2K": "2048x1360", "4K": "3504x2336" },
+    "2:3": { "1K": "1024x1536", "2K": "1360x2048", "4K": "2336x3504" },
+    "5:4": { "1K": "1120x896", "2K": "2240x1792", "4K": "3200x2560" },
+    "4:5": { "1K": "896x1120", "2K": "1792x2240", "4K": "2560x3200" },
+    "21:9": { "1K": "1456x624", "2K": "2912x1248", "4K": "3840x1648" },
+    "9:21": { "1K": "624x1456", "2K": "1248x2912", "4K": "1648x3840" },
+    "1:3": { "1K": "688x2048", "2K": "1280x3840", "4K": "1280x3840" },
+    "3:1": { "1K": "2048x688", "2K": "3840x1280", "4K": "3840x1280" },
+    "2:1": { "1K": "1536x768", "2K": "3072x1536", "4K": "3840x1920" },
+    "1:2": { "1K": "768x1536", "2K": "1536x3072", "4K": "1920x3840" }
+};
+
+const GPT_IMAGE_2_MAP: Record<string, string> = {
+    "1:1": "1024x1024",
+    "16:9": "1672x941",
+    "9:16": "941x1672",
+    "4:3": "1443x1090",
+    "3:4": "1090x1443",
+    "3:2": "1536x1024",
+    "2:3": "1024x1536",
+    "5:4": "1408x1120",
+    "4:5": "1120x1408",
+    "21:9": "1920x832",
+    "9:21": "832x1920",
+    "1:2": "896x1792",
+    "2:1": "1792x896"
+};
+
+function parseGrsaiResolution(model: string, sizeStr: string | undefined) {
+    const defaultRes = { aspectRatio: "1:1", imageSize: "1K" };
+    if (!sizeStr) return defaultRes;
+
+    const trimmed = sizeStr.trim();
+    let ratioStr = "1:1";
+    let tier: "1K" | "2K" | "4K" = "1K";
+
+    if (trimmed.includes("-")) {
+        const parts = trimmed.split("-");
+        ratioStr = parts[0] || "1:1";
+        const t = parts[1] ? parts[1].toUpperCase() : "1K";
+        if (t === "2K" || t === "4K") {
+            tier = t as "2K" | "4K";
+        }
+    } else {
+        const dimensions = parseImageDimensions(trimmed);
+        if (dimensions) {
+            const { width, height } = dimensions;
+            const COMMON_RATIOS = [
+                { ratio: 1.0, value: "1:1" },
+                { ratio: 1.5, value: "3:2" },
+                { ratio: 2 / 3, value: "2:3" },
+                { ratio: 4 / 3, value: "4:3" },
+                { ratio: 0.75, value: "3:4" },
+                { ratio: 16 / 9, value: "16:9" },
+                { ratio: 9 / 16, value: "9:16" },
+                { ratio: 21 / 9, value: "21:9" },
+                { ratio: 9 / 21, value: "9:21" },
+                { ratio: 1 / 3, value: "1:3" },
+                { ratio: 3 / 1, value: "3:1" },
+                { ratio: 2 / 1, value: "2:1" },
+                { ratio: 1 / 2, value: "1:2" },
+                { ratio: 5 / 4, value: "5:4" },
+                { ratio: 4 / 5, value: "4:5" }
+            ];
+            const targetRatio = width / height;
+            let bestRatio = "1:1";
+            let minDiff = Infinity;
+            for (const item of COMMON_RATIOS) {
+                const diff = Math.abs(targetRatio - item.ratio);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    bestRatio = item.value;
+                }
+            }
+            ratioStr = bestRatio;
+
+            // 优先查表判断
+            const normSizeStr = `${width}x${height}`;
+            const mapEntry = GPT_IMAGE_2_VIP_MAP[ratioStr];
+            if (mapEntry) {
+                if (mapEntry["4K"] === normSizeStr) {
+                    tier = "4K";
+                } else if (mapEntry["2K"] === normSizeStr) {
+                    tier = "2K";
+                } else if (mapEntry["1K"] === normSizeStr) {
+                    tier = "1K";
+                } else {
+                    const pixels = width * height;
+                    if (pixels >= 5500000) {
+                        tier = "4K";
+                    } else if (pixels >= 1800000) {
+                        tier = "2K";
+                    } else {
+                        tier = "1K";
+                    }
+                }
+            } else {
+                const pixels = width * height;
+                if (pixels >= 5500000) {
+                    tier = "4K";
+                } else if (pixels >= 1800000) {
+                    tier = "2K";
+                } else {
+                    tier = "1K";
+                }
+            }
+        } else {
+            ratioStr = trimmed;
+        }
+    }
+
+    const isGptImage = model.toLowerCase().includes("gpt-image");
+    if (isGptImage) {
+        if (model.toLowerCase().includes("vip")) {
+            const ratioMap = GPT_IMAGE_2_VIP_MAP[ratioStr] || GPT_IMAGE_2_VIP_MAP["1:1"];
+            const resStr = ratioMap[tier] || ratioMap["1K"];
+            return { aspectRatio: resStr };
+        } else {
+            const resStr = GPT_IMAGE_2_MAP[ratioStr] || GPT_IMAGE_2_MAP["1:1"];
+            return { aspectRatio: resStr };
+        }
+    } else {
+        return { aspectRatio: ratioStr, imageSize: tier };
+    }
+}
+
 
 function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
@@ -194,9 +328,10 @@ function parseImagePayload(payload: ImageApiResponse) {
     if (typeof payload.code === "number" && payload.code !== 0) {
         throw new Error(payload.msg || "请求失败");
     }
+    const items = payload.results || payload.data || [];
     const images =
-        payload.data
-            ?.map(resolveImageDataUrl)
+        items
+            .map(resolveImageDataUrl)
             .filter((value): value is string => Boolean(value))
             .map((dataUrl) => ({ id: nanoid(), dataUrl })) || [];
 
@@ -240,7 +375,7 @@ function aiHeaders(config: AiConfig, contentType?: string) {
 }
 
 function geminiBaseUrl(config: Pick<AiConfig, "baseUrl">) {
-    const normalizedBaseUrl = config.baseUrl.trim().replace(/\/+$/, "");
+    const normalizedBaseUrl = config.baseUrl.trim().replace(/\/chat\/completions\/?$/i, "").replace(/\/+$/, "");
     const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
     return lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/v1beta") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1beta`;
 }
@@ -337,12 +472,17 @@ function validateGeminiPayload(payload: GeminiPayload) {
 
 async function readFetchError(response: Response, fallback: string) {
     const text = await response.text();
-    if (!text) return readStatusError(response.status, fallback);
-    try {
-        return responseErrorMessage(JSON.parse(text)) || readStatusError(response.status, fallback);
-    } catch {
-        return text.slice(0, 300) || readStatusError(response.status, fallback);
+    let errorMsg = "";
+    if (!text) {
+        errorMsg = readStatusError(response.status, fallback);
+    } else {
+        try {
+            errorMsg = responseErrorMessage(JSON.parse(text)) || readStatusError(response.status, fallback);
+        } catch {
+            errorMsg = text.slice(0, 300) || readStatusError(response.status, fallback);
+        }
     }
+    return `${errorMsg} (URL: ${response.url})`;
 }
 
 function consumeResponseStreamBlock(block: string, state: ResponseStreamState, onDelta?: (text: string) => void) {
@@ -376,7 +516,7 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
     state.buffer += text;
     for (;;) {
         const match = state.buffer.match(/\r?\n\r?\n/);
-        if (!match) break;
+        if (!match || match.index === undefined) break;
         consumeResponseStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
         state.buffer = state.buffer.slice(match.index + match[0].length);
     }
@@ -386,7 +526,112 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
     }
 }
 
+function toOpenAiMessages(input: any[]) {
+    const messages: any[] = [];
+    for (const item of input) {
+        if (!item) continue;
+        if ("role" in item) {
+            let content = item.content;
+            if (Array.isArray(content)) {
+                content = content.map((c: any) => {
+                    if (c.type === "input_text") {
+                        return { type: "text", text: c.text };
+                    } else if (c.type === "input_image") {
+                        return { type: "image_url", image_url: { url: c.image_url } };
+                    }
+                    return c;
+                });
+            }
+            messages.push({ role: item.role, content });
+        } else if (item.type === "function_call") {
+            messages.push({
+                role: "assistant",
+                tool_calls: [
+                    {
+                        id: item.call_id,
+                        type: "function",
+                        function: {
+                            name: item.name,
+                            arguments: item.arguments
+                        }
+                    }
+                ]
+            });
+        } else if (item.type === "function_call_output") {
+            messages.push({
+                role: "tool",
+                tool_call_id: item.call_id,
+                content: item.output
+            });
+        }
+    }
+    return messages;
+}
+
 async function requestStreamingResponse(config: AiConfig, body: Record<string, unknown>, onDelta?: (text: string) => void, options?: RequestOptions): Promise<ToolResponseResult> {
+    const modelNameLower = String(body.model || "").toLowerCase();
+    const isChatgpt2apiModel = [
+        "gpt-image-2", "gpt-image-2-vip", 
+        "gpt-5", "gpt-5.5", "gpt-5-mini", "gpt-5-1", "gpt-5-2", "gpt-5-3", "gpt-5-3-mini",
+        "grok-imagine-video", "gpt-4o-mini-tts"
+    ].includes(modelNameLower);
+
+    const isStandardOpenAi = 
+        config.baseUrl.toLowerCase().includes("openai.com") || 
+        config.baseUrl.toLowerCase().includes("deepseek") || 
+        config.baseUrl.toLowerCase().includes("anthropic") || 
+        config.baseUrl.toLowerCase().includes("grsai") || 
+        !isChatgpt2apiModel;
+
+    if (isStandardOpenAi) {
+        const messages = toOpenAiMessages((body.input as any) || []);
+        const response = await fetch(aiApiUrl(config, "/chat/completions"), {
+            method: "POST",
+            headers: { ...aiHeaders(config, "application/json") },
+            body: JSON.stringify({
+                model: body.model,
+                messages,
+                stream: true
+            }),
+            signal: options?.signal,
+        });
+
+        if (!response.ok) throw new Error(await readFetchError(response, "请求失败"));
+        if (!response.body) return { content: "", toolCalls: [] };
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let text = "";
+        let buffer = "";
+
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                if (trimmed === "data: [DONE]") continue;
+                if (trimmed.startsWith("data: ")) {
+                    try {
+                        const data = JSON.parse(trimmed.slice(6));
+                        const delta = data.choices?.[0]?.delta;
+                        if (delta?.content) {
+                            text += delta.content;
+                            onDelta?.(delta.content);
+                        }
+                    } catch (e) {
+                        // 忽略不完整的 JSON
+                    }
+                }
+            }
+        }
+        return { content: text, toolCalls: [] };
+    }
+
     const response = await fetch(aiApiUrl(config, "/responses"), {
         method: "POST",
         headers: { ...aiHeaders(config, "application/json"), Accept: "text/event-stream" },
@@ -524,7 +769,7 @@ function consumeGeminiStreamText(state: GeminiStreamState, text: string, onDelta
     state.buffer += text;
     for (;;) {
         const match = state.buffer.match(/\r?\n\r?\n/);
-        if (!match) break;
+        if (!match || match.index === undefined) break;
         consumeGeminiStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
         state.buffer = state.buffer.slice(match.index + match[0].length);
     }
@@ -608,11 +853,39 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
 }
 
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    let modelToUse = config.model || config.imageModel;
+    const decodedModel = modelToUse.includes("::") ? modelToUse.split("::")[1] : modelToUse;
+    const lowerDecoded = decodedModel.toLowerCase();
+    if (lowerDecoded.includes("gpt-4") || lowerDecoded.includes("gpt-5") || lowerDecoded.includes("gemini") || lowerDecoded.includes("claude") || lowerDecoded.includes("deepseek") || lowerDecoded.includes("qwen") || lowerDecoded.includes("text") || lowerDecoded.includes("chat")) {
+        modelToUse = config.imageModel;
+    }
+    const requestConfig = resolveModelRequestConfig(config, modelToUse);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     if (requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, options);
+        } catch (error) {
+            throw new Error(readAxiosError(error, "请求失败"));
+        }
+    }
+    if (requestConfig.baseUrl.toLowerCase().includes("grsai")) {
+        const grsaiParams = parseGrsaiResolution(requestConfig.model, config.size);
+        try {
+            const response = await axios.post<ImageApiResponse>(
+                aiApiUrl(requestConfig, "/api/generate"),
+                {
+                    model: requestConfig.model,
+                    prompt: withSystemPrompt(requestConfig, prompt),
+                    ...grsaiParams,
+                    replyType: "json"
+                },
+                {
+                    headers: aiHeaders(requestConfig, "application/json"),
+                    signal: options?.signal,
+                }
+            );
+            const images = parseImagePayload(response.data);
+            return images;
         } catch (error) {
             throw new Error(readAxiosError(error, "请求失败"));
         }
@@ -644,9 +917,42 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 }
 
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
-    const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
+    let modelToUse = config.model || config.imageModel;
+    const decodedModel = modelToUse.includes("::") ? modelToUse.split("::")[1] : modelToUse;
+    const lowerDecoded = decodedModel.toLowerCase();
+    if (lowerDecoded.includes("gpt-4") || lowerDecoded.includes("gpt-5") || lowerDecoded.includes("gemini") || lowerDecoded.includes("claude") || lowerDecoded.includes("deepseek") || lowerDecoded.includes("qwen") || lowerDecoded.includes("text") || lowerDecoded.includes("chat")) {
+        modelToUse = config.imageModel;
+    }
+    const requestConfig = resolveModelRequestConfig(config, modelToUse);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
+    if (requestConfig.baseUrl.toLowerCase().includes("grsai")) {
+        if (mask) throw new Error("Grsai 接口暂不支持蒙版编辑");
+        const grsaiParams = parseGrsaiResolution(requestConfig.model, config.size);
+        try {
+            const base64Images = await Promise.all(
+                references.map(async (image) => await imageToDataUrl(image))
+            );
+            const response = await axios.post<ImageApiResponse>(
+                aiApiUrl(requestConfig, "/api/generate"),
+                {
+                    model: requestConfig.model,
+                    prompt: withSystemPrompt(requestConfig, prompt),
+                    images: base64Images,
+                    ...grsaiParams,
+                    replyType: "json"
+                },
+                {
+                    headers: aiHeaders(requestConfig, "application/json"),
+                    signal: options?.signal,
+                }
+            );
+            const images = parseImagePayload(response.data);
+            return images;
+        } catch (error) {
+            throw new Error(readAxiosError(error, "请求失败"));
+        }
+    }
     if (requestConfig.apiFormat === "gemini") {
         if (mask) throw new Error("Gemini 调用格式暂不支持蒙版编辑");
         try {
@@ -661,7 +967,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     formData.set("model", requestConfig.model);
     formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
     formData.set("n", String(n));
-    formData.set("response_format", "b64_json");
+    formData.set("response_format", requestConfig.baseUrl.toLowerCase().includes("grsai") ? "url" : "b64_json");
     formData.set("output_format", IMAGE_OUTPUT_FORMAT);
     if (quality) {
         formData.set("quality", quality);
